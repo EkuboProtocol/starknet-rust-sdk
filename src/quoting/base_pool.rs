@@ -83,17 +83,11 @@ impl BasePool {
             );
         } else {
             if let Some(first) = sorted_ticks.first() {
-                if state.sqrt_ratio
-                    > to_sqrt_ratio(first.index).expect("first tick has invalid index")
-                {
-                    if let Some(last) = sorted_ticks.last() {
-                        assert!(
-                            state.sqrt_ratio
-                                >= to_sqrt_ratio(last.index).expect("last tick has invalid index"),
-                            "tick must be outside first and last tick if active_tick_index is none"
-                        );
-                    }
-                }
+                assert!(
+                    state.sqrt_ratio
+                        <= to_sqrt_ratio(first.index).expect("first tick has invalid index"),
+                    "current sqrt_ratio must be lower than equal sqrt_ratio of first tick if active_tick_index is none"
+                );
             }
         }
 
