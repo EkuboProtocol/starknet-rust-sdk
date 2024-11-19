@@ -53,43 +53,52 @@ mod tests {
         approximate_number_of_tick_spacings_crossed, u256_to_float_base_x128,
     };
     use alloc::vec;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_find_nearest_initialized_tick_index_no_ticks() {
-        let sorted_ticks: Vec<Tick> = vec![];
-        let result = find_nearest_initialized_tick_index(&sorted_ticks, 0);
-        assert_eq!(result, None);
+        assert_eq!(find_nearest_initialized_tick_index(&vec![], 0), None);
     }
 
     #[test]
     fn test_find_nearest_initialized_tick_index_one_tick_less_than() {
-        let sorted_ticks = vec![Tick {
-            index: -1,
-            liquidity_delta: 1,
-        }];
-        let result = find_nearest_initialized_tick_index(&sorted_ticks, 0);
-        assert_eq!(result, Some(0));
+        assert_eq!(
+            find_nearest_initialized_tick_index(
+                &vec![Tick {
+                    index: -1,
+                    liquidity_delta: 1,
+                }],
+                0
+            ),
+            Some(0)
+        );
     }
 
     #[test]
     fn test_find_nearest_initialized_tick_index_one_tick_equal_to() {
-        let sorted_ticks = vec![Tick {
-            index: 0,
-            liquidity_delta: 1,
-        }];
-        let result = find_nearest_initialized_tick_index(&sorted_ticks, 0);
-        assert_eq!(result, Some(0));
+        assert_eq!(
+            find_nearest_initialized_tick_index(
+                &vec![Tick {
+                    index: 0,
+                    liquidity_delta: 1,
+                }],
+                0
+            ),
+            Some(0)
+        );
     }
 
     #[test]
     fn test_find_nearest_initialized_tick_index_one_tick_greater_than() {
-        let sorted_ticks = vec![Tick {
-            index: 1,
-            liquidity_delta: 1,
-        }];
-        let result = find_nearest_initialized_tick_index(&sorted_ticks, 0);
-        assert_eq!(result, None);
+        assert_eq!(
+            find_nearest_initialized_tick_index(
+                &vec![Tick {
+                    index: 1,
+                    liquidity_delta: 1,
+                }],
+                0
+            ),
+            None
+        );
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub struct LimitOrderPoolState {
 #[derive(Default, Clone, Copy)]
 pub struct LimitOrderPoolResources {
     pub base_pool_resources: BasePoolResources,
+    // the number of orders that were pulled, i.e. the number of times we crossed active ticks
+    //   that were the end boundary of a position
+    pub orders_pulled: u32,
 }
 
 impl Add for LimitOrderPoolResources {
@@ -30,6 +33,7 @@ impl Add for LimitOrderPoolResources {
     fn add(self, rhs: Self) -> Self::Output {
         LimitOrderPoolResources {
             base_pool_resources: self.base_pool_resources + rhs.base_pool_resources,
+            orders_pulled: self.orders_pulled + rhs.orders_pulled,
         }
     }
 }
@@ -119,6 +123,8 @@ impl Pool for LimitOrderPool {
                 consumed_amount: result.consumed_amount,
                 execution_resources: LimitOrderPoolResources {
                     base_pool_resources: result.execution_resources,
+                    // todo: calculate how many orders were pulled
+                    orders_pulled: 0,
                 },
                 fees_paid: result.fees_paid,
                 is_price_increasing: result.is_price_increasing,
@@ -192,6 +198,7 @@ mod tests {
         assert_eq!(quote.state_after.max_tick_index_after_swap, Some(None));
         assert_eq!(quote.consumed_amount, 641);
         assert_eq!(quote.calculated_amount, 639);
+        assert_eq!(quote.execution_resources.orders_pulled, 0);
         assert_eq!(
             quote
                 .execution_resources
@@ -264,6 +271,7 @@ mod tests {
         assert_eq!(quote.state_after.max_tick_index_after_swap, Some(Some(2)));
         assert_eq!(quote.consumed_amount, 1000);
         assert_eq!(quote.calculated_amount, 997);
+        assert_eq!(quote.execution_resources.orders_pulled, 1);
         assert_eq!(
             quote
                 .execution_resources

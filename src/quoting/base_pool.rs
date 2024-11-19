@@ -119,6 +119,10 @@ impl BasePool {
             sorted_ticks,
         }
     }
+
+    pub fn get_sorted_ticks(&self) -> &Vec<Tick> {
+        &self.sorted_ticks
+    }
 }
 
 impl Pool for BasePool {
