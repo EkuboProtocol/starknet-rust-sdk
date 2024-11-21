@@ -281,8 +281,7 @@ impl Pool for TwammPool {
                     .map_err(TwammPoolQuoteError::BasePoolQuoteError)?;
 
                 base_pool_state_override = Some(quote.state_after);
-                base_pool_execution_resources =
-                    base_pool_execution_resources + quote.execution_resources;
+                base_pool_execution_resources += quote.execution_resources;
             } else if amount0 > 0 || amount1 > 0 {
                 let (amount, is_token1, sqrt_ratio_limit) = if amount0 != 0 {
                     (amount0, false, MIN_SQRT_RATIO_AT_MAX_TICK_SPACING)
