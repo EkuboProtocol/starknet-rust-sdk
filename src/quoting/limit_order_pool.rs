@@ -47,8 +47,8 @@ pub struct LimitOrderPool {
     base_pool: BasePool,
 }
 
-pub const LIMIT_ORDER_TICK_SPACING: u32 = 128;
-pub const DOUBLE_LIMIT_ORDER_TICK_SPACING: u32 = 2 * LIMIT_ORDER_TICK_SPACING;
+pub const LIMIT_ORDER_TICK_SPACING: i32 = 128;
+pub const DOUBLE_LIMIT_ORDER_TICK_SPACING: i32 = 2i32 * LIMIT_ORDER_TICK_SPACING;
 
 impl LimitOrderPool {
     pub fn new(
@@ -66,7 +66,7 @@ impl LimitOrderPool {
                     token0,
                     token1,
                     fee: 0,
-                    tick_spacing: LIMIT_ORDER_TICK_SPACING,
+                    tick_spacing: LIMIT_ORDER_TICK_SPACING.unsigned_abs(),
                     extension,
                 },
                 BasePoolState {
@@ -207,7 +207,7 @@ impl Pool for LimitOrderPool {
                     approximate_number_of_tick_spacings_crossed(
                         base_pool_state.sqrt_ratio,
                         skip_starting_sqrt_ratio,
-                        LIMIT_ORDER_TICK_SPACING,
+                        LIMIT_ORDER_TICK_SPACING.unsigned_abs(),
                     );
 
                 let liquidity_at_next_unpulled_order_tick_index = {
@@ -365,8 +365,9 @@ fn calculate_orders_pulled(
             crossed_tick
         };
 
-        if !(sorted_ticks[crossed_tick].index.unsigned_abs() % DOUBLE_LIMIT_ORDER_TICK_SPACING)
-            .is_zero()
+        if !(sorted_ticks[crossed_tick].index.unsigned_abs()
+            % DOUBLE_LIMIT_ORDER_TICK_SPACING.unsigned_abs())
+        .is_zero()
         {
             orders_pulled += 1;
         }
@@ -382,15 +383,18 @@ mod tests {
     use crate::quoting::limit_order_pool::{LimitOrderPool, LIMIT_ORDER_TICK_SPACING};
     use crate::quoting::types::{Pool, QuoteParams, Tick, TokenAmount};
     use alloc::vec;
-    use num_traits::ToPrimitive;
+
+    const TOKEN0: U256 = U256([0, 0, 0, 1]);
+    const TOKEN1: U256 = U256([0, 0, 0, 2]);
+    const EXTENSION: U256 = U256([0, 0, 0, 3]);
 
     #[test]
     fn test_swap_one_for_zero_partial() {
         let liquidity: i128 = 10000000;
         let pool = LimitOrderPool::new(
-            U256::from(1u32),
-            U256::from(2u32),
-            U256::from(3u32),
+            TOKEN0,
+            TOKEN1,
+            EXTENSION,
             to_sqrt_ratio(0).unwrap(),
             0,
             liquidity.unsigned_abs(),
@@ -400,7 +404,7 @@ mod tests {
                     liquidity_delta: liquidity,
                 },
                 Tick {
-                    index: LIMIT_ORDER_TICK_SPACING.to_i32().unwrap(),
+                    index: LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: -liquidity,
                 },
             ],
@@ -412,7 +416,7 @@ mod tests {
                 override_state: None,
                 meta: (),
                 token_amount: TokenAmount {
-                    token: U256::from(2),
+                    token: TOKEN1,
                     amount: 10000,
                 },
             })
@@ -451,9 +455,9 @@ mod tests {
     fn test_swap_one_for_zero_cross_multiple() {
         let liquidity: i128 = 10000000;
         let pool = LimitOrderPool::new(
-            U256::from(1u32),
-            U256::from(2u32),
-            U256::from(3u32),
+            TOKEN0,
+            TOKEN1,
+            EXTENSION,
             to_sqrt_ratio(0).unwrap(),
             0,
             liquidity.unsigned_abs(),
@@ -463,17 +467,15 @@ mod tests {
                     liquidity_delta: liquidity,
                 },
                 Tick {
-                    index: LIMIT_ORDER_TICK_SPACING.to_i32().unwrap(),
+                    index: LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: -liquidity,
                 },
                 Tick {
-                    index: (LIMIT_ORDER_TICK_SPACING.to_i32().unwrap() * 2),
+                    index: LIMIT_ORDER_TICK_SPACING * 2,
                     liquidity_delta: liquidity,
                 },
                 Tick {
-                    index: (LIMIT_ORDER_TICK_SPACING.to_i32().unwrap() * 3)
-                        .to_i32()
-                        .unwrap(),
+                    index: LIMIT_ORDER_TICK_SPACING * 3,
                     liquidity_delta: -liquidity,
                 },
             ],
@@ -485,7 +487,7 @@ mod tests {
                 override_state: None,
                 meta: (),
                 token_amount: TokenAmount {
-                    token: U256::from(2),
+                    token: TOKEN1,
                     amount: 1000,
                 },
             })
@@ -518,5 +520,152 @@ mod tests {
                 .tick_spacings_crossed,
             2
         );
+    }
+
+    #[test]
+    fn test_order_sell_token0_for_token1_can_only_be_executed_once() {
+        let liquidity: i128 = 10000000;
+        let pool = LimitOrderPool::new(
+            TOKEN0,
+            TOKEN1,
+            EXTENSION,
+            to_sqrt_ratio(0).unwrap(),
+            0,
+            liquidity.unsigned_abs(),
+            vec![
+                Tick {
+                    index: 0,
+                    liquidity_delta: liquidity,
+                },
+                Tick {
+                    index: LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: -liquidity,
+                },
+            ],
+        );
+
+        // trade all the way through the order
+        let quote0 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
+                override_state: None,
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN1,
+                    amount: 1000,
+                },
+            })
+            .expect("quote0 failed");
+
+        assert_eq!(
+            quote0.state_after.base_pool_state.active_tick_index,
+            Some(1)
+        );
+        assert_eq!(
+            quote0.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
+        );
+
+        // swap back through the order which should be pulled
+        let quote1 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(0),
+                override_state: Some(quote0.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN0,
+                    amount: 1000,
+                },
+            })
+            .expect("quote1 failed");
+
+        let quote2 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
+                override_state: Some(quote1.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN1,
+                    amount: 1000,
+                },
+            })
+            .expect("quote2 failed");
+
+        assert_eq!(quote1.consumed_amount, 0);
+        assert_eq!(quote1.calculated_amount, 0);
+        assert_eq!(quote2.consumed_amount, 0);
+        assert_eq!(quote2.calculated_amount, 0);
+    }
+
+    #[test]
+    fn test_order_sell_token1_for_token0_can_only_be_executed_once() {
+        let liquidity: i128 = 10000000;
+        let pool = LimitOrderPool::new(
+            TOKEN0,
+            TOKEN1,
+            EXTENSION,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2).unwrap(),
+            LIMIT_ORDER_TICK_SPACING * 2,
+            liquidity.unsigned_abs(),
+            vec![
+                Tick {
+                    index: LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: liquidity,
+                },
+                Tick {
+                    index: LIMIT_ORDER_TICK_SPACING * 2,
+                    liquidity_delta: -liquidity,
+                },
+            ],
+        );
+
+        // trade all the way through the order
+        let quote0 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
+                override_state: None,
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN0,
+                    amount: 10000,
+                },
+            })
+            .expect("quote0 failed");
+
+        assert_eq!(
+            quote0.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
+        );
+        assert_eq!(quote0.state_after.base_pool_state.active_tick_index, None);
+
+        // swap back through the order which should be pulled
+        let quote1 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2),
+                override_state: Some(quote0.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN1,
+                    amount: 1000,
+                },
+            })
+            .expect("quote1 failed");
+
+        let quote2 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
+                override_state: Some(quote1.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN0,
+                    amount: 1000,
+                },
+            })
+            .expect("quote2 failed");
+
+        assert_eq!(quote1.consumed_amount, 0);
+        assert_eq!(quote1.calculated_amount, 0);
+        assert_eq!(quote2.consumed_amount, 0);
+        assert_eq!(quote2.calculated_amount, 0);
     }
 }
