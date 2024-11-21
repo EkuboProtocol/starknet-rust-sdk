@@ -292,7 +292,11 @@ impl Pool for BasePool {
                     };
                 }
             } else {
-                active_tick_index = None
+                active_tick_index = if is_increasing {
+                    self.sorted_ticks.len().checked_sub(1)
+                } else {
+                    None
+                };
             }
         }
 
