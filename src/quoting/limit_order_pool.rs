@@ -365,10 +365,7 @@ fn calculate_orders_pulled(
             crossed_tick
         };
 
-        if !(sorted_ticks[crossed_tick].index.unsigned_abs()
-            % DOUBLE_LIMIT_ORDER_TICK_SPACING.unsigned_abs())
-        .is_zero()
-        {
+        if !(sorted_ticks[crossed_tick].index % DOUBLE_LIMIT_ORDER_TICK_SPACING).is_zero() {
             orders_pulled += 1;
         }
     }
