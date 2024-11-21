@@ -4,7 +4,7 @@ use crate::math::uint::U256;
 use crate::quoting::types::{NodeKey, Pool, Quote, QuoteParams, Tick};
 use crate::quoting::util::approximate_number_of_tick_spacings_crossed;
 use alloc::vec::Vec;
-use core::ops::Add;
+use core::ops::{Add, AddAssign};
 use num_traits::Zero;
 
 // Resources consumed during any swap execution.
@@ -15,16 +15,20 @@ pub struct BasePoolResources {
     pub tick_spacings_crossed: u32,
 }
 
+impl AddAssign for BasePoolResources {
+    fn add_assign(&mut self, rhs: Self) {
+        self.no_override_price_change += rhs.no_override_price_change;
+        self.initialized_ticks_crossed += rhs.initialized_ticks_crossed;
+        self.tick_spacings_crossed += rhs.tick_spacings_crossed;
+    }
+}
+
 impl Add for BasePoolResources {
     type Output = Self;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        BasePoolResources {
-            no_override_price_change: self.no_override_price_change + rhs.no_override_price_change,
-            initialized_ticks_crossed: self.initialized_ticks_crossed
-                + rhs.initialized_ticks_crossed,
-            tick_spacings_crossed: self.tick_spacings_crossed + rhs.tick_spacings_crossed,
-        }
+    fn add(mut self, rhs: Self) -> Self::Output {
+        self += rhs;
+        self
     }
 }
 
@@ -288,7 +292,11 @@ impl Pool for BasePool {
                     };
                 }
             } else {
-                active_tick_index = None
+                active_tick_index = if is_increasing {
+                    self.sorted_ticks.len().checked_sub(1)
+                } else {
+                    None
+                };
             }
         }
 
