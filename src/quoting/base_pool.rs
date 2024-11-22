@@ -80,8 +80,9 @@ impl BasePool {
         // check ticks are sorted in linear time
         let mut last_tick: Option<i32> = None;
         let mut total_liquidity: u128 = 0;
+        let mut active_liquidity: u128 = 0;
         let spacing_i32 = key.tick_spacing as i32;
-        for tick in sorted_ticks.iter() {
+        for (i, tick) in sorted_ticks.iter().enumerate() {
             if let Some(last) = last_tick {
                 assert!(tick.index > last, "ticks must be sorted");
             };
@@ -94,9 +95,20 @@ impl BasePool {
                 total_liquidity - tick.liquidity_delta.unsigned_abs()
             } else {
                 total_liquidity + tick.liquidity_delta.unsigned_abs()
+            };
+
+            if let Some(active_index) = state.active_tick_index {
+                if i <= active_index {
+                    if tick.liquidity_delta > 0 {
+                        active_liquidity += tick.liquidity_delta.unsigned_abs();
+                    } else {
+                        active_liquidity -= tick.liquidity_delta.unsigned_abs();
+                    }
+                }
             }
         }
         assert!(total_liquidity.is_zero(), "total liquidity must be zero");
+        assert_eq!(active_liquidity, state.liquidity, "active liquidity does not equal sum of liquidity deltas before or equal to active tick");
 
         if let Some(active) = state.active_tick_index {
             let tick = sorted_ticks
@@ -572,7 +584,38 @@ mod tests {
                 BasePoolState {
                     sqrt_ratio: to_sqrt_ratio(0).unwrap(),
                     active_tick_index: Some(2),
-                    liquidity: 2,
+                    liquidity: 0,
+                },
+                vec![
+                    Tick {
+                        index: 0,
+                        liquidity_delta: 2,
+                    },
+                    Tick {
+                        index: MAX_TICK_AT_MAX_TICK_SPACING,
+                        liquidity_delta: -2,
+                    },
+                ],
+            );
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "active liquidity does not equal sum of liquidity deltas before or equal to active tick"
+        )]
+        fn test_liquidity_equal_sum_of_deltas_active_ticks() {
+            BasePool::new(
+                NodeKey {
+                    token0: U256::one(),
+                    token1: U256::one() + 1,
+                    extension: U256::zero(),
+                    fee: 0,
+                    tick_spacing: MAX_TICK_SPACING,
+                },
+                BasePoolState {
+                    sqrt_ratio: to_sqrt_ratio(0).unwrap(),
+                    active_tick_index: Some(0),
+                    liquidity: 0,
                 },
                 vec![
                     Tick {
