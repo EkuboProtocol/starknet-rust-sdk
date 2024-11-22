@@ -100,6 +100,12 @@ impl Pool for LimitOrderPool {
         params: QuoteParams<Self::State, Self::Meta>,
     ) -> Result<Quote<Self::Resources, Self::State>, Self::QuoteError> {
         let initial_state = params.override_state.unwrap_or_else(|| self.get_state());
+        let sorted_ticks = self.base_pool.get_sorted_ticks();
+
+        let is_increasing = is_price_increasing(
+            params.token_amount.amount,
+            params.token_amount.token == self.get_key().token1,
+        );
 
         let mut calculated_amount = 0;
         let mut consumed_amount = 0;
@@ -107,32 +113,45 @@ impl Pool for LimitOrderPool {
         let mut base_pool_resources = BasePoolResources::default();
         let mut base_pool_state = initial_state.base_pool_state;
 
-        let is_increasing = is_price_increasing(
-            params.token_amount.amount,
-            params.token_amount.token == self.get_key().token1,
-        );
+        let active_tick_index = base_pool_state.active_tick_index;
 
-        let sorted_ticks = self.base_pool.get_sorted_ticks();
-
-        let next_unpulled_order_tick_index =
-            initial_state.tick_indices_reached.map(|(lower, upper)| {
-                if lower == upper {
-                    lower // we haven't moved out of the active tick, so the current tick is unpulled
-                } else if is_increasing {
-                    upper.map(|upper| {
-                        Ord::min(
-                            sorted_ticks.len() - 1, // will not overflow because upper is Some
-                            upper + 1,
-                        )
+        // if we need to skip one or more already pulled orders, this contains the tick index of the next unpulled order
+        let next_unpulled_order_tick_index_after_skip = initial_state
+            .tick_indices_reached
+            .and_then(|(lower, upper)| {
+                if is_increasing {
+                    (active_tick_index != upper).then(|| {
+                        Some(upper.map_or(
+                            0, // safe because active_tick_index != upper
+                            |upper| {
+                                if !(sorted_ticks[upper].index % DOUBLE_LIMIT_ORDER_TICK_SPACING)
+                                    .is_zero()
+                                {
+                                    // upper has been pulled as part of a decrease in price, so select the next tick index
+                                    Ord::min(upper + 1, sorted_ticks.len() - 1)
+                                } else {
+                                    upper
+                                }
+                            },
+                        ))
                     })
                 } else {
-                    lower.and_then(|lower| lower.checked_sub(1))
+                    (active_tick_index != lower).then(|| {
+                        lower.and_then(|lower| {
+                            if (sorted_ticks[lower].index % DOUBLE_LIMIT_ORDER_TICK_SPACING)
+                                .is_zero()
+                            {
+                                // lower has been pulled as part of an increase in price, so select the previous tick index
+                                lower.checked_sub(1)
+                            } else {
+                                Some(lower)
+                            }
+                        })
+                    })
                 }
             });
 
-        if let Some(next_unpulled_order_tick_index) = next_unpulled_order_tick_index {
-            let active_tick_index = base_pool_state.active_tick_index;
-
+        if let Some(next_unpulled_order_tick_index) = next_unpulled_order_tick_index_after_skip {
             let active_tick_sqrt_ratio_limit = if is_increasing {
                 active_tick_index
                     .map_or_else(|| sorted_ticks.first(), |idx| sorted_ticks.get(idx + 1))
@@ -178,35 +197,24 @@ impl Pool for LimitOrderPool {
             // skip the range of pulled orders and start from the sqrt ratio of the next unpulled order if we have some amount remaining
             if !amount_remaining.is_zero() {
                 let skip_starting_sqrt_ratio = if is_increasing {
-                    let next_unpulled_order_sqrt_ratio = next_unpulled_order_tick_index.map_or(
-                        Ok(MAX_SQRT_RATIO), // note that reaching this case implies that the pool has no initialized ticks
-                        |idx| {
-                            let tick_index = sorted_ticks[idx].index;
-                            to_sqrt_ratio(tick_index)
-                                .ok_or(BasePoolQuoteError::InvalidTick(tick_index))
-                        },
-                    )?;
-
-                    next_unpulled_order_sqrt_ratio.clamp(
-                        base_pool_state.sqrt_ratio, // for the case that next_unpulled_order_index refers to the starting tick index which we've already crossed
-                        params_sqrt_ratio_limit,
-                    )
+                    next_unpulled_order_tick_index
+                        .map_or(
+                            Ok(MAX_SQRT_RATIO), // note that reaching this case implies that the pool has no initialized ticks
+                            |idx| {
+                                let tick_index = sorted_ticks[idx].index;
+                                to_sqrt_ratio(tick_index)
+                                    .ok_or(BasePoolQuoteError::InvalidTick(tick_index))
+                            },
+                        )?
+                        .min(params_sqrt_ratio_limit)
                 } else {
-                    let next_unpulled_order_sqrt_ratio =
-                        next_unpulled_order_tick_index.map_or(Ok(MIN_SQRT_RATIO), |idx| {
-                            sorted_ticks
-                                .get(idx + 1)
-                                .map(|tick| {
-                                    to_sqrt_ratio(tick.index)
-                                        .ok_or(BasePoolQuoteError::InvalidTick(tick.index))
-                                })
-                                .unwrap_or(Ok(MAX_SQRT_RATIO))
-                        })?;
-
-                    next_unpulled_order_sqrt_ratio.clamp(
-                        params_sqrt_ratio_limit,
-                        base_pool_state.sqrt_ratio, // for the case that next_unpulled_order_index refers to the starting tick index which we've already crossed
-                    )
+                    next_unpulled_order_tick_index
+                        .map_or_else(|| sorted_ticks.first(), |idx| sorted_ticks.get(idx + 1))
+                        .map_or(Ok(MIN_SQRT_RATIO), |tick| {
+                            to_sqrt_ratio(tick.index)
+                                .ok_or(BasePoolQuoteError::InvalidTick(tick.index))
+                        })?
+                        .max(params_sqrt_ratio_limit)
                 };
 
                 // account for the tick spacings of the uninitialized ticks that we will skip next
@@ -316,7 +324,7 @@ impl Pool for LimitOrderPool {
                 })
         };
 
-        let from_tick_index = next_unpulled_order_tick_index
+        let from_tick_index = next_unpulled_order_tick_index_after_skip
             .unwrap_or(initial_state.base_pool_state.active_tick_index);
         let to_tick_index = if is_increasing {
             Ord::max(from_tick_index, tick_index_after)
@@ -658,6 +666,10 @@ mod tests {
             quote0.state_after.tick_indices_reached,
             Some((None, Some(1)))
         );
+        assert_eq!(
+            quote0.state_after.tick_indices_reached,
+            Some((None, Some(1)))
+        );
 
         // swap back through the order which should be pulled
         let quote1 = pool
@@ -689,6 +701,11 @@ mod tests {
         assert_eq!(
             quote1.state_after.tick_indices_reached,
             Some((None, Some(1)))
+        );
+        assert_eq!(quote1.state_after.base_pool_state.liquidity, 0);
+        assert_eq!(
+            quote1.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2).unwrap()
         );
         assert_eq!(quote2.consumed_amount, 0);
         assert_eq!(quote2.calculated_amount, 0);
@@ -757,6 +774,14 @@ mod tests {
             (quote0.consumed_amount, quote0.calculated_amount),
             (962, 958)
         );
+        assert_eq!(
+            quote0.state_after.base_pool_state.active_tick_index,
+            Some(4)
+        );
+        assert_eq!(
+            quote0.state_after.tick_indices_reached,
+            Some((Some(2), Some(4)))
+        );
 
         // now trade back the other way to tick -2.5, which should execute half of tick 4 to 5, and all of tick -1 to -0, and half of tick -3 to -2
         // total should be at least 1k
@@ -770,17 +795,45 @@ mod tests {
                     amount: 1000000,
                 },
             })
-            .expect("quote0 failed");
+            .expect("quote1 failed");
 
+        assert_eq!(
+            quote1.state_after.tick_indices_reached,
+            Some((Some(0), Some(4)))
+        );
         assert_eq!(
             quote1.state_after.base_pool_state.sqrt_ratio,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * -5 / 2).unwrap()
         );
-        // gets through the first order and then halfway through the second order
         assert_eq!(
             (quote1.consumed_amount, quote1.calculated_amount),
-            // todo: this is not correct but it should definitely be higher than 640
-            (1000, 1000)
+            (1921, 1918)
+        );
+
+        let quote2 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 4 / 5),
+                override_state: Some(quote1.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN1,
+                    amount: 1000000,
+                },
+            })
+            .expect("quote2 failed");
+
+        assert_eq!(
+            quote2.state_after.tick_indices_reached,
+            Some((Some(0), Some(4)))
+        );
+        assert_eq!(
+            quote2.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 4 / 5).unwrap()
+        );
+
+        assert_eq!(
+            (quote2.consumed_amount, quote2.calculated_amount),
+            (320, 320)
         );
     }
 }
