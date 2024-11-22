@@ -14,14 +14,12 @@ use super::util::approximate_number_of_tick_spacings_crossed;
 #[derive(Clone, Copy)]
 pub struct LimitOrderPoolState {
     pub base_pool_state: BasePoolState,
-    // the maximum active tick index we've reached after a swap of token1 for token0
-    // if None, then we haven't seen any swaps from token1 to token0
-    // if Some(sorted_ticks.len() - 1), then we have swapped through all the ticks greater than the current active tick index
-    pub max_tick_index_after_swap: Option<Option<usize>>,
-    // the minimum active tick index we've reached after a swap of token0 for token1
-    // if None, then we haven't seen any swaps from token0 to token1
-    // if Some(None), then we have swapped through all the ticks less than the current active tick index
-    pub min_tick_index_after_swap: Option<Option<usize>>,
+
+    // the minimum and maximum active tick index we've reached since the sorted ticks were last updated.
+    // if None, then we haven't seen any swap since the last sorted ticks update.
+    // if the minimum active tick index is Some(None), then we have swapped through all the ticks less than the current active tick index
+    // if the maxmimum active tick index is Some(sorted_ticks.len() - 1), then we have swapped through all the ticks greater than the current active tick index
+    pub tick_indices_reached: Option<(Option<usize>, Option<usize>)>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -93,8 +91,7 @@ impl Pool for LimitOrderPool {
     fn get_state(&self) -> Self::State {
         LimitOrderPoolState {
             base_pool_state: self.base_pool.get_state(),
-            max_tick_index_after_swap: None,
-            min_tick_index_after_swap: None,
+            tick_indices_reached: None,
         }
     }
 
@@ -115,13 +112,23 @@ impl Pool for LimitOrderPool {
             params.token_amount.token == self.get_key().token1,
         );
 
-        let next_unpulled_order_tick_index = if is_increasing {
-            initial_state.max_tick_index_after_swap
-        } else {
-            initial_state.min_tick_index_after_swap
-        };
-
         let sorted_ticks = self.base_pool.get_sorted_ticks();
+
+        let next_unpulled_order_tick_index =
+            initial_state.tick_indices_reached.map(|(lower, upper)| {
+                if lower == upper {
+                    lower // we haven't moved out of the active tick, so the current tick is unpulled
+                } else if is_increasing {
+                    upper.map(|upper| {
+                        Ord::min(
+                            sorted_ticks.len() - 1, // will not overflow because upper is Some
+                            upper + 1,
+                        )
+                    })
+                } else {
+                    lower.and_then(|lower| lower.checked_sub(1))
+                }
+            });
 
         if let Some(next_unpulled_order_tick_index) = next_unpulled_order_tick_index {
             let active_tick_index = base_pool_state.active_tick_index;
@@ -290,18 +297,23 @@ impl Pool for LimitOrderPool {
             base_pool_state = quote_simple.state_after;
         }
 
-        let tick_index_after = base_pool_state.active_tick_index;
+        let (tick_index_before, tick_index_after) = (
+            initial_state.base_pool_state.active_tick_index,
+            base_pool_state.active_tick_index,
+        );
 
-        let (min_tick_index_after_swap, max_tick_index_after_swap) = if is_increasing {
-            (
-                initial_state.min_tick_index_after_swap,
-                Some(tick_index_after),
-            )
+        let new_tick_indices_reached = if is_increasing {
+            initial_state
+                .tick_indices_reached
+                .map_or((tick_index_before, tick_index_after), |(lower, upper)| {
+                    (lower, Ord::max(upper, tick_index_after))
+                })
         } else {
-            (
-                Some(tick_index_after),
-                initial_state.max_tick_index_after_swap,
-            )
+            initial_state
+                .tick_indices_reached
+                .map_or((tick_index_after, tick_index_before), |(lower, upper)| {
+                    (Ord::min(lower, tick_index_after), upper)
+                })
         };
 
         let from_tick_index = next_unpulled_order_tick_index
@@ -326,8 +338,7 @@ impl Pool for LimitOrderPool {
             is_price_increasing: is_increasing,
             state_after: LimitOrderPoolState {
                 base_pool_state,
-                min_tick_index_after_swap,
-                max_tick_index_after_swap,
+                tick_indices_reached: Some(new_tick_indices_reached),
             },
         })
     }
@@ -420,8 +431,10 @@ mod tests {
             .expect("Quote failed");
 
         assert_eq!(quote.fees_paid, 0);
-        assert_eq!(quote.state_after.min_tick_index_after_swap, None);
-        assert_eq!(quote.state_after.max_tick_index_after_swap, Some(Some(1)));
+        assert_eq!(
+            quote.state_after.tick_indices_reached,
+            Some((Some(0), Some(1)))
+        );
         assert_eq!(quote.consumed_amount, 641);
         assert_eq!(quote.calculated_amount, 639);
         assert_eq!(quote.execution_resources.orders_pulled, 1);
@@ -491,8 +504,10 @@ mod tests {
             .expect("Quote failed");
 
         assert_eq!(quote.fees_paid, 0);
-        assert_eq!(quote.state_after.min_tick_index_after_swap, None);
-        assert_eq!(quote.state_after.max_tick_index_after_swap, Some(Some(2)));
+        assert_eq!(
+            quote.state_after.tick_indices_reached,
+            Some((Some(0), Some(2)))
+        );
         assert_eq!(quote.consumed_amount, 1000);
         assert_eq!(quote.calculated_amount, 997);
         assert_eq!(quote.execution_resources.orders_pulled, 1);
@@ -562,6 +577,11 @@ mod tests {
             quote0.state_after.base_pool_state.sqrt_ratio,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
         );
+        assert_eq!(
+            quote0.state_after.tick_indices_reached,
+            Some((Some(0), Some(1)))
+        );
+        assert_eq!(quote0.execution_resources.orders_pulled, 1);
 
         // swap back through the order which should be pulled
         let quote1 = pool
@@ -634,6 +654,10 @@ mod tests {
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
         );
         assert_eq!(quote0.state_after.base_pool_state.active_tick_index, None);
+        assert_eq!(
+            quote0.state_after.tick_indices_reached,
+            Some((None, Some(1)))
+        );
 
         // swap back through the order which should be pulled
         let quote1 = pool
@@ -662,6 +686,10 @@ mod tests {
 
         assert_eq!(quote1.consumed_amount, 0);
         assert_eq!(quote1.calculated_amount, 0);
+        assert_eq!(
+            quote1.state_after.tick_indices_reached,
+            Some((None, Some(1)))
+        );
         assert_eq!(quote2.consumed_amount, 0);
         assert_eq!(quote2.calculated_amount, 0);
     }
