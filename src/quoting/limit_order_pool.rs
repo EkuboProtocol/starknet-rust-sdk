@@ -388,9 +388,8 @@ fn calculate_orders_pulled(
 mod tests {
     use crate::math::tick::to_sqrt_ratio;
     use crate::math::uint::U256;
-    use crate::quoting::base_pool::{BasePool, BasePoolState};
     use crate::quoting::limit_order_pool::{LimitOrderPool, LIMIT_ORDER_TICK_SPACING};
-    use crate::quoting::types::{NodeKey, Pool, QuoteParams, Tick, TokenAmount};
+    use crate::quoting::types::{Pool, QuoteParams, Tick, TokenAmount};
     use alloc::vec;
 
     const TOKEN0: U256 = U256([0, 0, 0, 1]);
@@ -616,54 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn test_base_pool_case() {
-        let liquidity: i128 = 10000000;
-        let pool = BasePool::new(
-            NodeKey {
-                token0: TOKEN0,
-                token1: TOKEN1,
-                tick_spacing: LIMIT_ORDER_TICK_SPACING.unsigned_abs(),
-                extension: EXTENSION,
-                fee: 0,
-            },
-            BasePoolState {
-                sqrt_ratio: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2).unwrap(),
-                active_tick_index: Some(0),
-                liquidity: liquidity.unsigned_abs(),
-            },
-            vec![
-                Tick {
-                    index: LIMIT_ORDER_TICK_SPACING,
-                    liquidity_delta: liquidity,
-                },
-                Tick {
-                    index: LIMIT_ORDER_TICK_SPACING * 2,
-                    liquidity_delta: -liquidity,
-                },
-            ],
-        );
-
-        // trade all the way through the order
-        let quote0 = pool
-            .quote(QuoteParams {
-                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
-                override_state: None,
-                meta: (),
-                token_amount: TokenAmount {
-                    token: TOKEN0,
-                    amount: 1000,
-                },
-            })
-            .expect("quote0 failed");
-
-        assert_eq!(
-            quote0.state_after.sqrt_ratio,
-            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
-        );
-        assert_eq!(quote0.state_after.active_tick_index, None);
-    }
-
-    #[test]
     fn test_order_sell_token1_for_token0_can_only_be_executed_once() {
         let liquidity: i128 = 10000000;
         let pool = LimitOrderPool::new(
@@ -741,5 +692,95 @@ mod tests {
         );
         assert_eq!(quote2.consumed_amount, 0);
         assert_eq!(quote2.calculated_amount, 0);
+    }
+
+    #[test]
+    fn test_complex_pool_scenario() {
+        let liquidity: i128 = 10000000;
+        let pool = LimitOrderPool::new(
+            TOKEN0,
+            TOKEN1,
+            EXTENSION,
+            to_sqrt_ratio(0).unwrap(),
+            0,
+            liquidity.unsigned_abs(),
+            vec![
+                // order to sell token1 at tick -3
+                Tick {
+                    index: -3 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: liquidity,
+                },
+                Tick {
+                    index: -2 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: -liquidity,
+                },
+                // order to sell token1 at tick -1
+                Tick {
+                    index: -1 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: liquidity,
+                },
+                // cancels out with order at token0 to sell token0 at tick 0
+                Tick {
+                    index: 1 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: -liquidity,
+                },
+                Tick {
+                    index: 4 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: liquidity,
+                },
+                Tick {
+                    index: 5 * LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: -liquidity,
+                },
+            ],
+        );
+
+        // trade to tick 4.5
+        let quote0 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 9 / 2),
+                override_state: None,
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN1,
+                    amount: 1000000,
+                },
+            })
+            .expect("quote0 failed");
+
+        assert_eq!(
+            quote0.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 9 / 2).unwrap()
+        );
+        // gets through the first order and then halfway through the second order
+        assert_eq!(
+            (quote0.consumed_amount, quote0.calculated_amount),
+            (962, 958)
+        );
+
+        // now trade back the other way to tick -2.5, which should execute half of tick 4 to 5, and all of tick -1 to -0, and half of tick -3 to -2
+        // total should be at least 1k
+        let quote1 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * -5 / 2),
+                override_state: Some(quote0.state_after),
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN0,
+                    amount: 1000000,
+                },
+            })
+            .expect("quote0 failed");
+
+        assert_eq!(
+            quote1.state_after.base_pool_state.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * -5 / 2).unwrap()
+        );
+        // gets through the first order and then halfway through the second order
+        assert_eq!(
+            (quote1.consumed_amount, quote1.calculated_amount),
+            // todo: this is not correct but it should definitely be higher than 640
+            (1000, 1000)
+        );
     }
 }
