@@ -388,8 +388,9 @@ fn calculate_orders_pulled(
 mod tests {
     use crate::math::tick::to_sqrt_ratio;
     use crate::math::uint::U256;
+    use crate::quoting::base_pool::{BasePool, BasePoolState};
     use crate::quoting::limit_order_pool::{LimitOrderPool, LIMIT_ORDER_TICK_SPACING};
-    use crate::quoting::types::{Pool, QuoteParams, Tick, TokenAmount};
+    use crate::quoting::types::{NodeKey, Pool, QuoteParams, Tick, TokenAmount};
     use alloc::vec;
 
     const TOKEN0: U256 = U256([0, 0, 0, 1]);
@@ -615,6 +616,54 @@ mod tests {
     }
 
     #[test]
+    fn test_base_pool_case() {
+        let liquidity: i128 = 10000000;
+        let pool = BasePool::new(
+            NodeKey {
+                token0: TOKEN0,
+                token1: TOKEN1,
+                tick_spacing: LIMIT_ORDER_TICK_SPACING.unsigned_abs(),
+                extension: EXTENSION,
+                fee: 0,
+            },
+            BasePoolState {
+                sqrt_ratio: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2).unwrap(),
+                active_tick_index: Some(0),
+                liquidity: liquidity.unsigned_abs(),
+            },
+            vec![
+                Tick {
+                    index: LIMIT_ORDER_TICK_SPACING,
+                    liquidity_delta: liquidity,
+                },
+                Tick {
+                    index: LIMIT_ORDER_TICK_SPACING * 2,
+                    liquidity_delta: -liquidity,
+                },
+            ],
+        );
+
+        // trade all the way through the order
+        let quote0 = pool
+            .quote(QuoteParams {
+                sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING),
+                override_state: None,
+                meta: (),
+                token_amount: TokenAmount {
+                    token: TOKEN0,
+                    amount: 1000,
+                },
+            })
+            .expect("quote0 failed");
+
+        assert_eq!(
+            quote0.state_after.sqrt_ratio,
+            to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING).unwrap()
+        );
+        assert_eq!(quote0.state_after.active_tick_index, None);
+    }
+
+    #[test]
     fn test_order_sell_token1_for_token0_can_only_be_executed_once() {
         let liquidity: i128 = 10000000;
         let pool = LimitOrderPool::new(
@@ -644,7 +693,7 @@ mod tests {
                 meta: (),
                 token_amount: TokenAmount {
                     token: TOKEN0,
-                    amount: 10000,
+                    amount: 1000,
                 },
             })
             .expect("quote0 failed");
