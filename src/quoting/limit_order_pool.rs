@@ -672,7 +672,7 @@ mod tests {
             EXTENSION,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 2).unwrap(),
             LIMIT_ORDER_TICK_SPACING * 2,
-            liquidity.unsigned_abs(),
+            0,
             vec![
                 Tick {
                     index: LIMIT_ORDER_TICK_SPACING,
