@@ -56,8 +56,47 @@ impl LimitOrderPool {
         sqrt_ratio: U256,
         tick: i32,
         liquidity: u128,
-        sorted_ticks: Vec<Tick>,
+        mut sorted_ticks: Vec<Tick>,
     ) -> Self {
+        let mut active_tick_index = find_nearest_initialized_tick_index(&sorted_ticks, tick);
+
+        // insert a tick with a liquidity delta of 0 if necessary.
+        // such a tick can only exist when the current tick is an even tick (divisible by DOUBLE_LIMIT_ORDER_TICK_SPACING)
+        // and it is referenced as an upper bound of a sell order for token1 and a lower bound of a sell order for token0,
+        // where both orders have the same liquidity.
+        if let Some(tick_index) = active_tick_index {
+            let tick_number = sorted_ticks[tick_index].index;
+            let next_tick_index = tick_index + 1;
+
+            // note that this tick can only be a lower boundary of an order selling token1.
+            // it is impossible that this tick marks the upper boundary of an order selling token0 because this would imply
+            // that a sell order for token0 exists that should be triggered at a lower price than the current one.
+            let order_start_tick =
+                (!(tick_number % DOUBLE_LIMIT_ORDER_TICK_SPACING).is_zero()).then_some(tick_number);
+
+            if let Some(order_start_tick) = order_start_tick {
+                let order_end_tick = order_start_tick + LIMIT_ORDER_TICK_SPACING;
+
+                let order_end_tick_missing = sorted_ticks
+                    .get(next_tick_index)
+                    .is_none_or(|tick| tick.index != order_end_tick);
+
+                if order_end_tick_missing {
+                    sorted_ticks.insert(
+                        next_tick_index,
+                        Tick {
+                            index: order_end_tick,
+                            liquidity_delta: 0,
+                        },
+                    );
+
+                    if tick >= order_end_tick {
+                        active_tick_index = Some(next_tick_index);
+                    }
+                }
+            }
+        }
+
         LimitOrderPool {
             base_pool: BasePool::new(
                 NodeKey {
@@ -70,7 +109,7 @@ impl LimitOrderPool {
                 BasePoolState {
                     sqrt_ratio,
                     liquidity,
-                    active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
+                    active_tick_index,
                 },
                 sorted_ticks,
             ),
@@ -776,11 +815,11 @@ mod tests {
         );
         assert_eq!(
             quote0.state_after.base_pool_state.active_tick_index,
-            Some(4)
+            Some(5)
         );
         assert_eq!(
             quote0.state_after.tick_indices_reached,
-            Some((Some(2), Some(4)))
+            Some((Some(3), Some(5)))
         );
 
         // now trade back the other way to tick -2.5, which should execute half of tick 4 to 5, and all of tick -1 to -0, and half of tick -3 to -2
@@ -799,7 +838,7 @@ mod tests {
 
         assert_eq!(
             quote1.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
         assert_eq!(
             quote1.state_after.base_pool_state.sqrt_ratio,
@@ -807,7 +846,7 @@ mod tests {
         );
         assert_eq!(
             (quote1.consumed_amount, quote1.calculated_amount),
-            (1921, 1918)
+            (1282, 1278)
         );
 
         let quote2 = pool
@@ -824,7 +863,7 @@ mod tests {
 
         assert_eq!(
             quote2.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
         assert_eq!(
             quote2.state_after.base_pool_state.sqrt_ratio,
@@ -894,7 +933,7 @@ mod tests {
 
         assert_eq!(
             quote0.state_after.tick_indices_reached,
-            Some((Some(0), Some(2)))
+            Some((Some(0), Some(3)))
         );
         assert_eq!(
             quote0.state_after.base_pool_state.sqrt_ratio,
@@ -904,8 +943,9 @@ mod tests {
             (quote0.consumed_amount, quote0.calculated_amount),
             (962, 958)
         );
+        assert_eq!(quote0.execution_resources.orders_pulled, 1);
 
-        // then trade to tick 4.5, through 2.5 orders
+        // then trade to tick 4.5, through 2 orders
         let quote1 = pool
             .quote(QuoteParams {
                 sqrt_ratio_limit: to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 9 / 2),
@@ -918,22 +958,22 @@ mod tests {
             })
             .expect("quote1 failed");
 
+        assert_eq!(quote0.execution_resources.orders_pulled, 1);
         assert_eq!(
             quote1.state_after.base_pool_state.sqrt_ratio,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * 9 / 2).unwrap()
         );
         assert_eq!(
             (quote1.consumed_amount, quote1.calculated_amount),
-            // todo: this should be more like 2.5 orders
-            (1600, 1600)
+            (1282, 1278)
         );
         assert_eq!(
             quote1.state_after.base_pool_state.active_tick_index,
-            Some(4)
+            Some(5)
         );
         assert_eq!(
             quote1.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
 
         // trade back to tick -2.5, which should only cross 0.5 orders on one side and another 0.5 orders on the other
@@ -953,17 +993,17 @@ mod tests {
             quote2.state_after.base_pool_state.sqrt_ratio,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * -5 / 2).unwrap()
         );
-        // assert_eq!(
-        //     (quote2.consumed_amount, quote2.calculated_amount),
-        //     (640, 640)
-        // );
-        // assert_eq!(
-        //     quote2.state_after.base_pool_state.active_tick_index,
-        //     Some(4)
-        // );
-        // assert_eq!(
-        //     quote2.state_after.tick_indices_reached,
-        //     Some((Some(0), Some(4)))
-        // );
+        assert_eq!(
+            (quote2.consumed_amount, quote2.calculated_amount),
+            (641, 639)
+        );
+        assert_eq!(
+            quote2.state_after.base_pool_state.active_tick_index,
+            Some(0)
+        );
+        assert_eq!(
+            quote2.state_after.tick_indices_reached,
+            Some((Some(0), Some(5)))
+        );
     }
 }
