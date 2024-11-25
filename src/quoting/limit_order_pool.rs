@@ -455,6 +455,29 @@ mod tests {
         }
 
         #[test]
+        #[should_panic(expected = "all ticks must have a neighbor")]
+        fn test_neighbor_ticks_validation_skipping_netted_tick() {
+            LimitOrderPool::new(
+                TOKEN0,
+                TOKEN1,
+                EXTENSION,
+                to_sqrt_ratio(0).unwrap(),
+                0,
+                1,
+                vec![
+                    Tick {
+                        index: LIMIT_ORDER_TICK_SPACING * -1,
+                        liquidity_delta: 1,
+                    },
+                    Tick {
+                        index: LIMIT_ORDER_TICK_SPACING,
+                        liquidity_delta: -1,
+                    },
+                ],
+            );
+        }
+
+        #[test]
         #[should_panic(expected = "last tick has no neighbor")]
         fn test_neighbor_ticks_validation_no_neighbor_last_tick() {
             LimitOrderPool::new(
