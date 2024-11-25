@@ -58,6 +58,26 @@ impl LimitOrderPool {
         liquidity: u128,
         sorted_ticks: Vec<Tick>,
     ) -> Self {
+        // check that each tick has at least 1 neighbor within 128 ticks
+        let active_tick_index = find_nearest_initialized_tick_index(&sorted_ticks, tick);
+        let mut maybe_last: Option<(&Tick, usize)> = None;
+        for t in sorted_ticks.iter() {
+            if let Some((last, count)) = maybe_last {
+                if t.index == last.index + LIMIT_ORDER_TICK_SPACING {
+                    maybe_last = Some((t, count + 1));
+                } else {
+                    assert!(!count.is_zero(), "all ticks must have a neighbor");
+                    maybe_last = Some((t, 0));
+                }
+            } else {
+                maybe_last = Some((t, 0));
+            }
+        }
+        assert!(
+            maybe_last.map_or(true, |(_, count)| !count.is_zero()),
+            "last tick has no neighbor"
+        );
+
         LimitOrderPool {
             base_pool: BasePool::new(
                 NodeKey {
@@ -70,7 +90,7 @@ impl LimitOrderPool {
                 BasePoolState {
                     sqrt_ratio,
                     liquidity,
-                    active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
+                    active_tick_index,
                 },
                 sorted_ticks,
             ),
@@ -404,6 +424,64 @@ mod tests {
     const TOKEN1: U256 = U256([0, 0, 0, 2]);
     const EXTENSION: U256 = U256([0, 0, 0, 3]);
 
+    mod constructor_validation {
+        use crate::math::tick::to_sqrt_ratio;
+        use crate::quoting::limit_order_pool::tests::{EXTENSION, TOKEN0, TOKEN1};
+        use crate::quoting::limit_order_pool::{LimitOrderPool, LIMIT_ORDER_TICK_SPACING};
+        use crate::quoting::types::Tick;
+        use alloc::vec;
+
+        #[test]
+        #[should_panic(expected = "all ticks must have a neighbor")]
+        fn test_neighbor_ticks_validation() {
+            LimitOrderPool::new(
+                TOKEN0,
+                TOKEN1,
+                EXTENSION,
+                to_sqrt_ratio(0).unwrap(),
+                0,
+                1,
+                vec![
+                    Tick {
+                        index: 0,
+                        liquidity_delta: 1,
+                    },
+                    Tick {
+                        index: LIMIT_ORDER_TICK_SPACING * 2,
+                        liquidity_delta: -1,
+                    },
+                ],
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "last tick has no neighbor")]
+        fn test_neighbor_ticks_validation_no_neighbor_last_tick() {
+            LimitOrderPool::new(
+                TOKEN0,
+                TOKEN1,
+                EXTENSION,
+                to_sqrt_ratio(0).unwrap(),
+                0,
+                2,
+                vec![
+                    Tick {
+                        index: 0,
+                        liquidity_delta: 2,
+                    },
+                    Tick {
+                        index: LIMIT_ORDER_TICK_SPACING,
+                        liquidity_delta: -1,
+                    },
+                    Tick {
+                        index: LIMIT_ORDER_TICK_SPACING * 3,
+                        liquidity_delta: -1,
+                    },
+                ],
+            );
+        }
+    }
+
     #[test]
     fn test_swap_one_for_zero_partial() {
         let liquidity: i128 = 10000000;
@@ -736,7 +814,11 @@ mod tests {
                     index: -1 * LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: liquidity,
                 },
-                // cancels out with order at token0 to sell token0 at tick 0
+                // -1 to 0 is canceled out with 0 to 1
+                Tick {
+                    index: 0,
+                    liquidity_delta: 0,
+                },
                 Tick {
                     index: 1 * LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: -liquidity,
@@ -776,11 +858,11 @@ mod tests {
         );
         assert_eq!(
             quote0.state_after.base_pool_state.active_tick_index,
-            Some(4)
+            Some(5)
         );
         assert_eq!(
             quote0.state_after.tick_indices_reached,
-            Some((Some(2), Some(4)))
+            Some((Some(3), Some(5)))
         );
 
         // now trade back the other way to tick -2.5, which should execute half of tick 4 to 5, and all of tick -1 to -0, and half of tick -3 to -2
@@ -799,7 +881,7 @@ mod tests {
 
         assert_eq!(
             quote1.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
         assert_eq!(
             quote1.state_after.base_pool_state.sqrt_ratio,
@@ -807,7 +889,7 @@ mod tests {
         );
         assert_eq!(
             (quote1.consumed_amount, quote1.calculated_amount),
-            (1921, 1918)
+            (1282, 1278)
         );
 
         let quote2 = pool
@@ -824,7 +906,7 @@ mod tests {
 
         assert_eq!(
             quote2.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
         assert_eq!(
             quote2.state_after.base_pool_state.sqrt_ratio,
@@ -863,7 +945,11 @@ mod tests {
                     index: -1 * LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: liquidity,
                 },
-                // cancels out with order at token0 to sell token0 at tick 0
+                // -1 to 0 is canceled out with 0 to 1
+                Tick {
+                    index: 0,
+                    liquidity_delta: 0,
+                },
                 Tick {
                     index: 1 * LIMIT_ORDER_TICK_SPACING,
                     liquidity_delta: -liquidity,
@@ -894,7 +980,7 @@ mod tests {
 
         assert_eq!(
             quote0.state_after.tick_indices_reached,
-            Some((Some(0), Some(2)))
+            Some((Some(0), Some(3)))
         );
         assert_eq!(
             quote0.state_after.base_pool_state.sqrt_ratio,
@@ -924,16 +1010,15 @@ mod tests {
         );
         assert_eq!(
             (quote1.consumed_amount, quote1.calculated_amount),
-            // todo: this should be more like 2.5 orders
-            (1600, 1600)
+            (1282, 1278)
         );
         assert_eq!(
             quote1.state_after.base_pool_state.active_tick_index,
-            Some(4)
+            Some(5)
         );
         assert_eq!(
             quote1.state_after.tick_indices_reached,
-            Some((Some(0), Some(4)))
+            Some((Some(0), Some(5)))
         );
 
         // trade back to tick -2.5, which should only cross 0.5 orders on one side and another 0.5 orders on the other
@@ -953,17 +1038,17 @@ mod tests {
             quote2.state_after.base_pool_state.sqrt_ratio,
             to_sqrt_ratio(LIMIT_ORDER_TICK_SPACING * -5 / 2).unwrap()
         );
-        // assert_eq!(
-        //     (quote2.consumed_amount, quote2.calculated_amount),
-        //     (640, 640)
-        // );
-        // assert_eq!(
-        //     quote2.state_after.base_pool_state.active_tick_index,
-        //     Some(4)
-        // );
-        // assert_eq!(
-        //     quote2.state_after.tick_indices_reached,
-        //     Some((Some(0), Some(4)))
-        // );
+        assert_eq!(
+            (quote2.consumed_amount, quote2.calculated_amount),
+            (641, 639)
+        );
+        assert_eq!(
+            quote2.state_after.base_pool_state.active_tick_index,
+            Some(0)
+        );
+        assert_eq!(
+            quote2.state_after.tick_indices_reached,
+            Some((Some(0), Some(5)))
+        );
     }
 }
