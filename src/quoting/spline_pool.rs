@@ -157,10 +157,137 @@ mod tests {
         SplinePool::new(TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), LIQUIDITY)
     }
 
+    mod constructor_validation {
+        use super::*;
+
+        #[test]
+        fn test_zero_liquidity_pool() {
+            let pool = SplinePool::new(TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), 0);
+            assert!(!pool.has_liquidity());
+        
+            let params = QuoteParams {
+                token_amount: TokenAmount {
+                    amount: 1000,
+                    token: TOKEN0,
+                },
+                sqrt_ratio_limit: None,
+                override_state: None,
+                meta: 0,
+            };
+        
+            let result = pool.quote(params).expect("Quote should succeed");
+            assert_eq!(result.calculated_amount, 0);
+            assert_eq!(result.consumed_amount, 0);
+        }
+
+        #[test]
+        fn test_min_price_constructor() {
+            let min_price_pool = SplinePool::new(
+                TOKEN0, 
+                TOKEN1, 
+                EXTENSION, 
+                to_sqrt_ratio(MIN_TICK_AT_MAX_TICK_SPACING).unwrap(), 
+                LIQUIDITY
+            );
+            
+            assert!(min_price_pool.has_liquidity());
+            assert_eq!(
+                min_price_pool.get_state().base_pool_state.sqrt_ratio, 
+                to_sqrt_ratio(MIN_TICK_AT_MAX_TICK_SPACING).unwrap()
+            );
+
+            let min_params = QuoteParams {
+                token_amount: TokenAmount {
+                    amount: 1000,
+                    token: TOKEN0,
+                },
+                sqrt_ratio_limit: None,
+                override_state: None,
+                meta: 0,
+            };
+            
+            min_price_pool.quote(min_params).expect("Quote at min price failed");
+        }
+
+        #[test]
+        fn test_max_price_constructor() {
+            let max_price_pool = SplinePool::new(
+                TOKEN0, 
+                TOKEN1, 
+                EXTENSION, 
+                to_sqrt_ratio(MAX_TICK_AT_MAX_TICK_SPACING).unwrap(), 
+                LIQUIDITY
+            );
+            
+            assert!(max_price_pool.has_liquidity());
+            assert_eq!(
+                max_price_pool.get_state().base_pool_state.sqrt_ratio, 
+                to_sqrt_ratio(MAX_TICK_AT_MAX_TICK_SPACING).unwrap()
+            );
+
+            let max_params = QuoteParams {
+                token_amount: TokenAmount {
+                    amount: 1000,
+                    token: TOKEN1,
+                },
+                sqrt_ratio_limit: None,
+                override_state: None,
+                meta: 0,
+            };
+            
+            max_price_pool.quote(max_params).expect("Quote at max price failed");
+        }
+
+        #[test]
+        fn test_min_liquidity_constructor() {
+            let min_liquidity: u128 = 1;
+            let pool = SplinePool::new(
+                TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), min_liquidity
+            );
+            
+            assert!(pool.has_liquidity());
+            assert_eq!(pool.get_state().liquidity_factor, min_liquidity);
+            
+            let params = QuoteParams {
+                token_amount: TokenAmount {
+                    amount: 1000,
+                    token: TOKEN0,
+                },
+                sqrt_ratio_limit: None,
+                override_state: None,
+                meta: 0,
+            };
+            
+            pool.quote(params).expect("Min liquidity quote failed");
+        }
+
+        #[test]
+        fn test_max_liquidity_constructor() {
+            let max_liquidity: u128 = i128::MAX as u128;
+            let pool = SplinePool::new(
+                TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), max_liquidity
+            );
+            
+            assert!(pool.has_liquidity());
+            assert_eq!(pool.get_state().liquidity_factor, max_liquidity);
+            
+            let params = QuoteParams {
+                token_amount: TokenAmount {
+                    amount: 1000,
+                    token: TOKEN0,
+                },
+                sqrt_ratio_limit: None,
+                override_state: None,
+                meta: 0,
+            };
+            
+            pool.quote(params).expect("Max liquidity quote failed");
+        }
+    }
+    
     #[test]
     fn test_quote_token0_input() {
         let pool = default_pool();
-
         let params = QuoteParams {
             token_amount: TokenAmount {
                 amount: 1000,
@@ -172,7 +299,6 @@ mod tests {
         };
 
         let quote = pool.quote(params).expect("Quote failed");
-
         assert_eq!(quote.consumed_amount, 1000);
         assert!(quote.calculated_amount > 0);
         assert_eq!(quote.state_after.liquidity_factor, LIQUIDITY);
@@ -181,7 +307,6 @@ mod tests {
     #[test]
     fn test_quote_token1_input() {
         let pool = default_pool();
-
         let params = QuoteParams {
             token_amount: TokenAmount {
                 amount: 1000,
@@ -193,172 +318,9 @@ mod tests {
         };
 
         let quote = pool.quote(params).expect("Quote failed");
-
         assert_eq!(quote.consumed_amount, 1000);
         assert!(quote.calculated_amount > 0);
         assert_eq!(quote.state_after.liquidity_factor, LIQUIDITY);
-    }
-
-    #[test]
-    fn test_zero_liquidity_pool() {
-        let pool = SplinePool::new(TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), 0);
-    
-        assert!(!pool.has_liquidity());
-    
-        let params = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 1000,
-                token: TOKEN0,
-            },
-            sqrt_ratio_limit: None,
-            override_state: None,
-            meta: 0,
-        };
-    
-        let result = pool.quote(params).expect("Quote should succeed");
-        
-        assert_eq!(result.calculated_amount, 0);
-        assert_eq!(result.consumed_amount, 0);
-    }
-
-    #[test]
-    fn test_quote_with_override_state() {
-        let pool = default_pool();
-        let original_state = pool.get_state();
-
-        let params = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 500,
-                token: TOKEN0,
-            },
-            sqrt_ratio_limit: None,
-            override_state: Some(original_state),
-            meta: 777,
-        };
-
-        let quote = pool.quote(params).expect("Override quote failed");
-        assert_eq!(quote.state_after.liquidity_factor, LIQUIDITY);
-    }
-
-    #[test]
-    fn test_initialization_with_min_max_price() {
-        let min_price_pool = SplinePool::new(
-            TOKEN0, 
-            TOKEN1, 
-            EXTENSION, 
-            to_sqrt_ratio(MIN_TICK_AT_MAX_TICK_SPACING).unwrap(), 
-            LIQUIDITY
-        );
-        
-        assert!(min_price_pool.has_liquidity());
-        let min_state = min_price_pool.get_state();
-        assert_eq!(min_state.base_pool_state.sqrt_ratio, to_sqrt_ratio(MIN_TICK_AT_MAX_TICK_SPACING).unwrap());
-        
-        let max_price_pool = SplinePool::new(
-            TOKEN0, 
-            TOKEN1, 
-            EXTENSION, 
-            to_sqrt_ratio(MAX_TICK_AT_MAX_TICK_SPACING).unwrap(), 
-            LIQUIDITY
-        );
-        
-        assert!(max_price_pool.has_liquidity());
-        let max_state = max_price_pool.get_state();
-        assert_eq!(max_state.base_pool_state.sqrt_ratio, to_sqrt_ratio(MAX_TICK_AT_MAX_TICK_SPACING).unwrap());
-        
-        // Test quotes at extreme prices - at min price, token0 input may not be fully consumed
-        let min_params = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 1000,
-                token: TOKEN0,
-            },
-            sqrt_ratio_limit: None,
-            override_state: None,
-            meta: 0,
-        };
-        
-        // Just verify that quoting works at min price
-        min_price_pool.quote(min_params).expect("Quote at min price failed");
-        
-        // Test quotes at extreme prices - at max price, token1 input may not be fully consumed
-        let max_params = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 1000,
-                token: TOKEN1,
-            },
-            sqrt_ratio_limit: None,
-            override_state: None,
-            meta: 0,
-        };
-        
-        // Just verify that quoting works at max price
-        max_price_pool.quote(max_params).expect("Quote at max price failed");
-    }
-
-
-    #[test]
-    fn test_consecutive_quotes_state() {
-        let pool = default_pool();
-        let initial_state = pool.get_state();
-        
-        let params1 = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 1000,
-                token: TOKEN0,
-            },
-            sqrt_ratio_limit: None,
-            override_state: None,
-            meta: 0,
-        };
-        
-        let quote1 = pool.quote(params1).expect("First quote failed");
-        let intermediate_state = quote1.state_after;
-        
-        let params2 = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 2000,
-                token: TOKEN1,
-            },
-            sqrt_ratio_limit: None,
-            override_state: Some(intermediate_state),
-            meta: 0,
-        };
-        
-        let quote2 = pool.quote(params2).expect("Second quote failed");
-        let final_state = quote2.state_after;
-        
-        // Verify state transitions
-        assert_ne!(initial_state.base_pool_state.sqrt_ratio, intermediate_state.base_pool_state.sqrt_ratio);
-        assert_ne!(intermediate_state.base_pool_state.sqrt_ratio, final_state.base_pool_state.sqrt_ratio);
-        
-        // Liquidity factor should remain constant
-        assert_eq!(initial_state.liquidity_factor, intermediate_state.liquidity_factor);
-        assert_eq!(intermediate_state.liquidity_factor, final_state.liquidity_factor);
-    }
-
-    #[test]
-    fn test_invalid_token_quote() {
-        let pool = default_pool();
-        
-        let params = QuoteParams {
-            token_amount: TokenAmount {
-                amount: 1000,
-                token: INVALID_TOKEN,
-            },
-            sqrt_ratio_limit: None,
-            override_state: None,
-            meta: 0,
-        };
-        
-        let result = pool.quote(params);
-        assert!(result.is_err(), "Quote with invalid token should fail");
-        
-        if let Err(error) = result {
-            match error {
-                BasePoolQuoteError::InvalidToken => {},
-                _ => panic!("Unexpected error type: quote with invalid token should return InvalidToken"),
-            }
-        }
     }
 
     #[test]
@@ -391,24 +353,30 @@ mod tests {
     }
 
     #[test]
-    fn test_min_max_liquidity_quote() {
-        let min_liquidity: u128 = 1;
-        let min_liquidity_pool = SplinePool::new(
-            TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), min_liquidity
-        );
-        
-        assert!(min_liquidity_pool.has_liquidity());
-        assert_eq!(min_liquidity_pool.get_state().liquidity_factor, min_liquidity);
-        
-        let max_liquidity: u128 = i128::MAX as u128;
-        let max_liquidity_pool = SplinePool::new(
-            TOKEN0, TOKEN1, EXTENSION, to_sqrt_ratio(0).unwrap(), max_liquidity
-        );
-        
-        assert!(max_liquidity_pool.has_liquidity());
-        assert_eq!(max_liquidity_pool.get_state().liquidity_factor, max_liquidity);
-        
+    fn test_quote_with_override_state() {
+        let pool = default_pool();
+        let original_state = pool.get_state();
+
         let params = QuoteParams {
+            token_amount: TokenAmount {
+                amount: 500,
+                token: TOKEN0,
+            },
+            sqrt_ratio_limit: None,
+            override_state: Some(original_state),
+            meta: 777,
+        };
+
+        let quote = pool.quote(params).expect("Override quote failed");
+        assert_eq!(quote.state_after.liquidity_factor, LIQUIDITY);
+    }
+
+    #[test]
+    fn test_consecutive_quotes_state() {
+        let pool = default_pool();
+        let initial_state = pool.get_state();
+        
+        let params1 = QuoteParams {
             token_amount: TokenAmount {
                 amount: 1000,
                 token: TOKEN0,
@@ -418,10 +386,49 @@ mod tests {
             meta: 0,
         };
         
-        min_liquidity_pool.quote(params.clone()).expect("Min liquidity quote failed");
+        let quote1 = pool.quote(params1).expect("First quote failed");
+        let intermediate_state = quote1.state_after;
         
-        max_liquidity_pool.quote(params.clone()).expect("Max liquidity quote failed");
+        let params2 = QuoteParams {
+            token_amount: TokenAmount {
+                amount: 2000,
+                token: TOKEN1,
+            },
+            sqrt_ratio_limit: None,
+            override_state: Some(intermediate_state),
+            meta: 0,
+        };
         
-        // Both quotes should succeed but we don't make specific assertions about price impact
+        let quote2 = pool.quote(params2).expect("Second quote failed");
+        let final_state = quote2.state_after;
+        
+        assert_ne!(initial_state.base_pool_state.sqrt_ratio, intermediate_state.base_pool_state.sqrt_ratio);
+        assert_ne!(intermediate_state.base_pool_state.sqrt_ratio, final_state.base_pool_state.sqrt_ratio);
+        assert_eq!(initial_state.liquidity_factor, intermediate_state.liquidity_factor);
+        assert_eq!(intermediate_state.liquidity_factor, final_state.liquidity_factor);
+    }
+
+    #[test]
+    fn test_invalid_token_quote() {
+        let pool = default_pool();
+        let params = QuoteParams {
+            token_amount: TokenAmount {
+                amount: 1000,
+                token: INVALID_TOKEN,
+            },
+            sqrt_ratio_limit: None,
+            override_state: None,
+            meta: 0,
+        };
+        
+        let result = pool.quote(params);
+        assert!(result.is_err(), "Quote with invalid token should fail");
+        
+        if let Err(error) = result {
+            match error {
+                BasePoolQuoteError::InvalidToken => {},
+                _ => panic!("Unexpected error type: quote with invalid token should return InvalidToken"),
+            }
+        }
     }
 }
