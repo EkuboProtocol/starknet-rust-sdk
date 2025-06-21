@@ -12,11 +12,13 @@ use num_traits::{ToPrimitive};
 pub struct SplinePoolState {
     pub base_pool_state: BasePoolState,
     pub liquidity_factor: u128,
+    pub total_shares: u256,
 }
 
 #[derive(Default, Clone, Copy)]
 pub struct SplinePoolResources {
     pub base_pool_resources: BasePoolResources,
+    pub fee_compounds: u32,
 }
 
 impl Add for SplinePoolResources {
@@ -24,6 +26,7 @@ impl Add for SplinePoolResources {
     fn add(self, rhs: Self) -> Self {
         Self {
             base_pool_resources: self.base_pool_resources + rhs.base_pool_resources,
+            fee_compounds: self.fee_compounds + rhs.fee_compounds,
         }
     }
 }
@@ -31,6 +34,8 @@ impl Add for SplinePoolResources {
 pub struct SplinePool {
     base_pool: BasePool,
     liquidity_factor: u128,
+    total_shares: u256,
+    last_compound_time: u64,
 }
 
 impl SplinePool {
@@ -40,6 +45,7 @@ impl SplinePool {
         extension: U256,
         sqrt_ratio: U256,
         liquidity_factor: u128,
+        last_compound_time: u64,
     ) -> Self {
         let signed_liquidity: i128 =
             liquidity_factor.to_i128().expect("liquidity_factor exceeds i128");
@@ -59,28 +65,62 @@ impl SplinePool {
             vec![] // Empty ticks for zero liquidity
         };
 
-        let node_key = NodeKey {
-            token0,
-            token1,
-            fee: 0,
-            tick_spacing: MAX_TICK_SPACING,
-            extension,
-        };
-
-        let base_pool_state = BasePoolState {
-            sqrt_ratio,
-            liquidity: liquidity_factor.into(),
-            active_tick_index: if liquidity_factor > 0 {
-                Some(0)
-            } else {
-                None
-            },
-        };
-
-        Self {
-            base_pool: BasePool::new(node_key, base_pool_state, ticks),
+        SplinePool {
+            base_pool: BasePool::new(
+                NodeKey {
+                    token0,
+                    token1,
+                    fee: 0,
+                    tick_spacing: MAX_TICK_SPACING,
+                    extension,
+                },
+                BasePoolState {
+                    sqrt_ratio,
+                    liquidity: liquidity_factor.into(),
+                    active_tick_index: if liquidity_factor > 0 {
+                        Some(0)
+                    } else {
+                        None
+                    },
+                },
+                ticks,
+            ),
             liquidity_factor,
+            total_shares: liquidity_factor.into(),
+            last_compound_time,
         }
+    }
+
+    fn calculate_shares(&self, total_shares: u256, factor: u128, total_factor: u128) -> u256 {
+        if total_factor == 0 {
+            return factor.into(); // First liquidity addition
+        }
+        let denom: u256 = total_factor.into();
+        let num: u256 = factor.into();
+        (total_shares * num) / denom
+    }
+    
+    fn calculate_factor(&self, total_factor: u128, shares: u256, total_shares: u256) -> u128 {
+        if total_shares == 0.into() {
+            return 0; // No shares exist
+        }
+        let total_factor_u256: u256 = total_factor.into();
+        let factor_u256 = (total_factor_u256 * shares) / total_shares;
+        factor_u256.try_into().unwrap()
+    }
+
+    pub fn compound_fees(&mut self, block_time: u64) -> u128 {
+        if block_time <= self.last_compound_time {
+            return 0; // No time has passed, no fees to compound
+        }
+        
+        // In the real contract, this would calculate and add fees
+        // For simulation, we just track that compounding has occurred
+        // by updating the timestamp
+        let liquidity_fees = 0; // No actual fee calculation in the simplified model
+        self.last_compound_time = block_time;
+        
+        liquidity_fees
     }
 }
 
@@ -105,24 +145,37 @@ impl Pool for SplinePool {
         &self,
         params: QuoteParams<Self::State, Self::Meta>,
     ) -> Result<Quote<Self::Resources, Self::State>, Self::QuoteError> {
+        let block_time = params.meta;
+        
+        // Check if fee compounding would happen in this quote
+        let should_compound = params.override_state.is_none() && block_time > self.last_compound_time;
+        let fee_compounds = if should_compound { 1 } else { 0 };
+        
+        // Use override state or current state for liquidity factor
+        // We don't simulate actual fee additions in this simplified model
+        let liquidity_factor = params.override_state.map_or(self.liquidity_factor, |os| os.liquidity_factor);
+        
+        // Delegate actual swap calculation to base_pool
         let result = self.base_pool.quote(QuoteParams {
             sqrt_ratio_limit: params.sqrt_ratio_limit,
             override_state: params.override_state.map(|s| s.base_pool_state),
             token_amount: params.token_amount,
             meta: (),
         })?;
-
+        
         Ok(Quote {
             calculated_amount: result.calculated_amount,
             consumed_amount: result.consumed_amount,
             execution_resources: SplinePoolResources {
                 base_pool_resources: result.execution_resources,
+                fee_compounds,
             },
             fees_paid: result.fees_paid,
             is_price_increasing: result.is_price_increasing,
             state_after: SplinePoolState {
                 base_pool_state: result.state_after,
-                liquidity_factor: self.liquidity_factor,
+                liquidity_factor,
+                total_shares: self.total_shares, // Shares don't change during quote
             },
         })
     }
