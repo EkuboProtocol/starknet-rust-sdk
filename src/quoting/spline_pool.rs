@@ -39,45 +39,22 @@ pub struct SplinePool {
 }
 
 impl SplinePool {
-    pub fn new(
-        token0: U256,
-        token1: U256,
-        extension: U256,
-        sqrt_ratio: U256,
-        liquidity_factor: u128,
-        last_compound_time: u64,
-    ) -> Self {
-        let signed_liquidity: i128 =
-            liquidity_factor.to_i128().expect("liquidity_factor exceeds i128");
-
-        let ticks = if liquidity_factor > 0 {
-            vec![
-                Tick {
-                    index: MIN_TICK_AT_MAX_TICK_SPACING,
-                    liquidity_delta: signed_liquidity,
-                },
-                Tick {
-                    index: MAX_TICK_AT_MAX_TICK_SPACING,
-                    liquidity_delta: -signed_liquidity,
-                },
-            ]
+    pub fn new(key: NodeKey, state: SplinePoolState, sorted_ticks: Vec<Tick>) -> Self {
+        let ticks = if !sorted_ticks.is_empty() {
+            sorted_ticks
+        } else if state.liquidity_factor > 0 {
+            Self::generate_liquidity_updates(&key, state.liquidity_factor, false)
         } else {
-            vec![] // Empty ticks for zero liquidity
+            vec![] 
         };
-
+        
         SplinePool {
             base_pool: BasePool::new(
-                NodeKey {
-                    token0,
-                    token1,
-                    fee: 0,
-                    tick_spacing: MAX_TICK_SPACING,
-                    extension,
-                },
+                key,
                 BasePoolState {
-                    sqrt_ratio,
-                    liquidity: liquidity_factor.into(),
-                    active_tick_index: if liquidity_factor > 0 {
+                    sqrt_ratio: state.sqrt_ratio,
+                    liquidity: state.liquidity_factor.into(),
+                    active_tick_index: if state.liquidity_factor > 0 {
                         Some(0)
                     } else {
                         None
@@ -85,15 +62,158 @@ impl SplinePool {
                 },
                 ticks,
             ),
-            liquidity_factor,
-            total_shares: liquidity_factor.into(),
-            last_compound_time,
+            liquidity_factor: state.liquidity_factor,
+            total_shares: state.liquidity_factor.into(),
+            last_compound_time: state.last_compound_time,
         }
+    }
+
+    fn generate_liquidity_updates(
+        key: &NodeKey,
+        liquidity_factor: u128,
+        is_negative: bool
+    ) -> Vec<Tick> {
+        const PI_NUM: U256 = U256([355, 0, 0, 0]); 
+        const PI_DENOM: U256 = U256([113, 0, 0, 0]);
+        const MIN_TICK: i32 = -88722883;
+        const MAX_TICK: i32 = 88722883;
+        
+        let mu: i32 = 0;              
+        let gamma: u64 = 1024;        
+        let rho: i32 = 0;            
+        let tick_spacing = key.tick_spacing as i32;
+        
+        let bounds = Self::generate_symmetric_bounds(key.tick_spacing);
+        
+        let lower_fr = MIN_TICK + (MIN_TICK % tick_spacing).abs();
+        let upper_fr = MAX_TICK - (MAX_TICK % tick_spacing).abs();
+        
+        let mut ticks = Vec::new();
+        
+        let base_liquidity = Self::get_liquidity_at_tick(
+            liquidity_factor, 
+            is_negative,
+            mu, 
+            gamma, 
+            rho
+        );
+        
+        ticks.push(Tick {
+            index: lower_fr,
+            liquidity_delta: if is_negative { -base_liquidity as i128 } else { base_liquidity as i128 },
+        });
+        
+        ticks.push(Tick {
+            index: upper_fr,
+            liquidity_delta: if is_negative { base_liquidity as i128 } else { -base_liquidity as i128 },
+        });
+        
+        let mut prior_liquidity = 0_i128;
+        
+        for bound in bounds.iter().rev() {
+            let liquidity = Self::get_liquidity_at_tick(
+                liquidity_factor,
+                is_negative,
+                mu,
+                gamma,
+                bound.0
+            ) as i128;
+            
+            let delta = liquidity - prior_liquidity;
+            
+            ticks.push(Tick {
+                index: bound.0,
+                liquidity_delta: delta, 
+            });
+            
+            ticks.push(Tick {
+                index: bound.1,
+                liquidity_delta: -delta,
+            });
+            
+            prior_liquidity = liquidity;
+        }
+        
+        ticks.sort_by_key(|tick| tick.index);
+        ticks
+    }
+    
+    // Returns Cauchy distribution liquidity profile:
+    // l(l0, gamma, tick) = (l0 / (pi * gamma)) * (1 / (1 + ((tick - mu) / gamma)^2))
+    fn get_liquidity_at_tick(
+        liquidity_factor: u128, 
+        is_negative: bool,
+        mu: i32,
+        gamma: u64,
+        tick: i32
+    ) -> u128 {
+        let gamma_u256 = U256::from(gamma as u128);
+        let shifted_tick = tick - mu;
+        let shifted_tick_mag_256 = U256::from(shifted_tick.abs() as u128);
+        
+        let denom = gamma_u256 * gamma_u256 + shifted_tick_mag_256 * shifted_tick_mag_256;
+        
+        let num = gamma_u256 * gamma_u256;
+        
+        let liquidity_factor_u256 = U256::from(liquidity_factor);
+        let l_u256 = (liquidity_factor_u256 * num) / denom;
+        
+        const PI_NUM_U256: U256 = U256([355, 0, 0, 0]);
+        const PI_DENOM_U256: U256 = U256([113, 0, 0, 0]);
+        
+        let l_scaled_u256 = (l_u256 * PI_DENOM_U256) / (PI_NUM_U256 * gamma_u256);
+        
+        l_scaled_u256.as_u128()
+    }
+    
+    fn generate_symmetric_bounds(tick_spacing: u32) -> Vec<(i32, i32)> {
+        const MIN_TICK: i32 = -88722883;
+        const MAX_TICK: i32 = 88722883;
+        let ts = tick_spacing as i32;
+        
+        let s = ts * 10;       
+        let res = 4;           
+        let tick_start = 0;    
+        let tick_max = MAX_TICK; 
+        
+        let mut bounds = Vec::new();
+        let dt = ts;
+        
+        let mut ticks = (tick_start, tick_start + dt);
+        
+        let mut seg = s;
+        let mut step = s / res as i32;
+        
+        let mut next = (ticks.0 - seg, ticks.1 + seg);
+        
+        let mut i = 0;
+        while ticks.1 != (tick_max + dt) {
+            ticks.0 -= step;
+            ticks.1 += step;
+            
+            if ticks.1 > (tick_max + dt) {
+                ticks.1 = tick_max + dt;
+                bounds.push(ticks);
+                break;
+            } 
+            else if ticks.1 == next.1 {
+                if i > 0 {
+                    seg *= 2;
+                    step *= 2;
+                }
+                i += 1;
+                next = (next.0 - seg, next.1 + seg);
+            }
+            
+            bounds.push(ticks);
+        }
+        
+        bounds
     }
 
     fn calculate_shares(&self, total_shares: u256, factor: u128, total_factor: u128) -> u256 {
         if total_factor == 0 {
-            return factor.into(); // First liquidity addition
+            return factor.into();
         }
         let denom: u256 = total_factor.into();
         let num: u256 = factor.into();
@@ -102,7 +222,7 @@ impl SplinePool {
     
     fn calculate_factor(&self, total_factor: u128, shares: u256, total_shares: u256) -> u128 {
         if total_shares == 0.into() {
-            return 0; // No shares exist
+            return 0;
         }
         let total_factor_u256: u256 = total_factor.into();
         let factor_u256 = (total_factor_u256 * shares) / total_shares;
@@ -111,13 +231,10 @@ impl SplinePool {
 
     pub fn compound_fees(&mut self, block_time: u64) -> u128 {
         if block_time <= self.last_compound_time {
-            return 0; // No time has passed, no fees to compound
+            return 0; 
         }
         
-        // In the real contract, this would calculate and add fees
-        // For simulation, we just track that compounding has occurred
-        // by updating the timestamp
-        let liquidity_fees = 0; // No actual fee calculation in the simplified model
+        let liquidity_fees = 0; 
         self.last_compound_time = block_time;
         
         liquidity_fees
@@ -145,17 +262,10 @@ impl Pool for SplinePool {
         &self,
         params: QuoteParams<Self::State, Self::Meta>,
     ) -> Result<Quote<Self::Resources, Self::State>, Self::QuoteError> {
-        let block_time = params.meta;
+        let fee_compounds = 0;
         
-        // Check if fee compounding would happen in this quote
-        let should_compound = params.override_state.is_none() && block_time > self.last_compound_time;
-        let fee_compounds = if should_compound { 1 } else { 0 };
-        
-        // Use override state or current state for liquidity factor
-        // We don't simulate actual fee additions in this simplified model
         let liquidity_factor = params.override_state.map_or(self.liquidity_factor, |os| os.liquidity_factor);
         
-        // Delegate actual swap calculation to base_pool
         let result = self.base_pool.quote(QuoteParams {
             sqrt_ratio_limit: params.sqrt_ratio_limit,
             override_state: params.override_state.map(|s| s.base_pool_state),
@@ -175,7 +285,7 @@ impl Pool for SplinePool {
             state_after: SplinePoolState {
                 base_pool_state: result.state_after,
                 liquidity_factor,
-                total_shares: self.total_shares, // Shares don't change during quote
+                total_shares: self.total_shares,
             },
         })
     }
