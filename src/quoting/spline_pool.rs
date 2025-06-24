@@ -202,35 +202,6 @@ impl SplinePool {
         
         bounds
     }
-
-    fn calculate_shares(&self, total_shares: u256, factor: u128, total_factor: u128) -> u256 {
-        if total_factor == 0 {
-            return factor.into();
-        }
-        let denom: u256 = total_factor.into();
-        let num: u256 = factor.into();
-        (total_shares * num) / denom
-    }
-    
-    fn calculate_factor(&self, total_factor: u128, shares: u256, total_shares: u256) -> u128 {
-        if total_shares == 0.into() {
-            return 0;
-        }
-        let total_factor_u256: u256 = total_factor.into();
-        let factor_u256 = (total_factor_u256 * shares) / total_shares;
-        factor_u256.try_into().unwrap()
-    }
-
-    pub fn compound_fees(&mut self, block_time: u64) -> u128 {
-        if block_time <= self.last_compound_time {
-            return 0; 
-        }
-        
-        let liquidity_fees = 0; 
-        self.last_compound_time = block_time;
-        
-        liquidity_fees
-    }
 }
 
 impl Pool for SplinePool {
