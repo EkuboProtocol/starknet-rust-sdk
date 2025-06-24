@@ -51,15 +51,7 @@ impl SplinePool {
         SplinePool {
             base_pool: BasePool::new(
                 key,
-                BasePoolState {
-                    sqrt_ratio: state.sqrt_ratio,
-                    liquidity: state.liquidity_factor.into(),
-                    active_tick_index: if state.liquidity_factor > 0 {
-                        Some(0)
-                    } else {
-                        None
-                    },
-                },
+                state.base_pool_state,
                 ticks,
             ),
             liquidity_factor: state.liquidity_factor,
