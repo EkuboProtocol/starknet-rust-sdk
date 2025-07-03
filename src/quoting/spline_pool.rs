@@ -45,7 +45,7 @@ impl SplinePool {
                 sorted_ticks,
             ),
             liquidity_factor: state.liquidity_factor,
-            total_shares: state.liquidity_factor.into(),
+            total_shares: state.total_shares,
         }
     }
 }
@@ -64,7 +64,7 @@ impl Pool for SplinePool {
         SplinePoolState {
             base_pool_state: self.base_pool.get_state(),
             liquidity_factor: self.liquidity_factor,
-            total_shares: self.liquidity_factor.into(),
+            total_shares: self.total_shares,
         }
     }
 
